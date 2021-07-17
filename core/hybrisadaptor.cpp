@@ -36,8 +36,11 @@
 
 #ifdef USE_BINDER
 #define SENSOR_BINDER_SERVICE_DEVICE "/dev/hwbinder"
-#define SENSOR_BINDER_SERVICE_IFACE "android.hardware.sensors@1.0::ISensors"
-#define SENSOR_BINDER_SERVICE_NAME  SENSOR_BINDER_SERVICE_IFACE "/default"
+#define SENSOR_BINDER_SERVICE_IFACE_1_0 "android.hardware.sensors@1.0::ISensors"
+#define SENSOR_BINDER_SERVICE_NAME_1_0  SENSOR_BINDER_SERVICE_IFACE_1_0 "/default"
+#define SENSOR_BINDER_SERVICE_IFACE_2_0 "android.hardware.sensors@2.0::ISensors"
+#define SENSOR_BINDER_SERVICE_NAME_2_0  SENSOR_BINDER_SERVICE_IFACE_2_0 "/default"
+#define MAX_RECEIVE_BUFFER_EVENT_COUNT 128
 #endif
 
 /* ========================================================================= *
@@ -474,6 +477,9 @@ void HybrisManager::getSensorList()
         m_sensorArray[i].requiredPermission.len = buffer->size;
         m_sensorArray[i].requiredPermission.owns_buffer = true;
         gbinder_buffer_free(buffer);
+
+         sensordLogW() << m_sensorArray[i].name.data.str << ":" << m_sensorArray[i].typeAsString.data.str;
+
     }
     gbinder_remote_reply_unref(reply);
 
@@ -509,15 +515,54 @@ void HybrisManager::startConnect()
 void HybrisManager::finishConnect()
 {
     m_remote = gbinder_servicemanager_get_service_sync(m_serviceManager,
-                                    SENSOR_BINDER_SERVICE_NAME, NULL);
+                                    SENSOR_BINDER_SERVICE_NAME_1_0, NULL);
+    
     if (!m_remote) {
-        sensordLogD() << "Could not find remote object for sensor service. Trying to reconnect.";
+        sensordLogD() << "Could not find remote object for sensor service. Trying 2.0 interface.";
+
+         m_remote = gbinder_servicemanager_get_service_sync(m_serviceManager,
+                                    SENSOR_BINDER_SERVICE_NAME_2_0, NULL);
+    
+        if (!m_remote) {
+            sensordLogD() << "Could not find remote object for sensor service. Trying to reconnect";
+        } else {
+            gbinder_remote_object_ref(m_remote);
+            sensordLogD() << "Connected to sensor 2.0 service";
+            m_deathId = gbinder_remote_object_add_death_handler(m_remote, binderDied, this);
+            m_client = gbinder_client_new(m_remote, SENSOR_BINDER_SERVICE_IFACE_2_0);
+            if (!m_client) {
+                sensordLogD() << "Could not create client for sensor service. Trying to reconnect.";
+            } else {
+                // Sometimes sensor service has lingering connetion from
+                // previous client which causes sensor service to restart
+                // and we need to test with poll if remote is really working.
+                GBinderRemoteReply *reply;
+                GBinderLocalRequest *req = gbinder_client_new_request(m_client);
+                int32_t status;
+
+                // Empty poll to test if remote is working
+                //req = gbinder_local_request_append_int32(req, 0);
+
+                //reply = gbinder_client_transact_sync_reply(m_client, POLL, req, &status);
+                //gbinder_local_request_unref(req);
+                //gbinder_remote_reply_unref(reply);
+
+                //if (status != GBINDER_STATUS_OK) {
+                //    sensordLogW() << "Poll failed with status" << status << ". Trying to reconnect.";
+                //} else {
+                //    getSensorList();
+                //    return;
+                //}
+                getSensorList();
+                return;
+            }
+        }
     } else {
         gbinder_remote_object_ref(m_remote);
-        sensordLogD() << "Connected to sensor service";
+        sensordLogD() << "Connected to sensor 1.0 service";
         m_deathId = gbinder_remote_object_add_death_handler(m_remote, binderDied,
                         this);
-        m_client = gbinder_client_new(m_remote, SENSOR_BINDER_SERVICE_IFACE);
+        m_client = gbinder_client_new(m_remote, SENSOR_BINDER_SERVICE_NAME_1_0);
         if (!m_client) {
             sensordLogD() << "Could not create client for sensor service. Trying to reconnect.";
         } else {
